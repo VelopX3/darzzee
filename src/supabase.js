@@ -73,6 +73,7 @@ export async function registerUser(email, password, name, phone) {
     const mockUser = {
       uid: 'mock-uid-' + Math.random().toString(36).substring(2, 11),
       email: email.toLowerCase(),
+      verified: false, // New mock users start as unverified
       user_metadata: {
         full_name: name.toUpperCase(),
         phone: phone,
@@ -87,8 +88,7 @@ export async function registerUser(email, password, name, phone) {
 
     users[email.toLowerCase()] = { ...mockUser, password };
     localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-    localStorage.setItem('darzzee_mock_session', JSON.stringify(mockUser));
-    window.dispatchEvent(new Event('mock-session-change'));
+    // DO NOT set the session here to prevent automatic login without verification
 
     return mockUser;
   }
@@ -160,6 +160,10 @@ export async function loginUser(email, password) {
       throw new Error("INVALID EMAIL OR PASSWORD!");
     }
 
+    if (user.verified === false) {
+      throw new Error("PLEASE VERIFY YOUR EMAIL FIRST!");
+    }
+
     const { password: _, ...userSession } = user;
     localStorage.setItem('darzzee_mock_session', JSON.stringify(userSession));
     window.dispatchEvent(new Event('mock-session-change'));
@@ -173,6 +177,23 @@ export async function loginUser(email, password) {
 
   if (error) throw error;
   return data.user;
+}
+
+// Helper to verify mock user and log them in
+export function verifyMockUser(email) {
+  if (isMock) {
+    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
+    const user = users[email.toLowerCase()];
+    if (user) {
+      user.verified = true;
+      users[email.toLowerCase()] = user;
+      localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
+      
+      const { password: _, ...userSession } = user;
+      localStorage.setItem('darzzee_mock_session', JSON.stringify(userSession));
+      window.dispatchEvent(new Event('mock-session-change'));
+    }
+  }
 }
 
 // 4. Logout user

@@ -6,7 +6,8 @@ import {
   signInWithGoogle, 
   sendPasswordResetEmail, 
   resetPassword, 
-  isMock 
+  isMock,
+  verifyMockUser
 } from '../supabase';
 
 export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIGN_IN', onCloseMode }) {
@@ -235,7 +236,7 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                   type="email" 
                   value={email}
                   onChange={(e) => validateEmail(e.target.value)}
-                  placeholder="ARNA.HAZARIKA@EMAIL.COM" 
+                  placeholder="ENTER YOUR EMAIL" 
                   className={!emailValid ? 'error-input' : ''}
                   required
                 />
@@ -249,7 +250,7 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••" 
+                    placeholder="ENTER YOUR PASSWORD" 
                     required
                   />
                   <button 
@@ -345,7 +346,7 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                   type="email" 
                   value={email}
                   onChange={(e) => validateEmail(e.target.value)}
-                  placeholder="ARNA.HAZARIKA@EMAIL.COM" 
+                  placeholder="ENTER YOUR EMAIL" 
                   className={!emailValid ? 'error-input' : ''}
                   required
                 />
@@ -359,7 +360,7 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => checkPasswordStrength(e.target.value)}
-                    placeholder="••••••••" 
+                    placeholder="ENTER YOUR PASSWORD" 
                     required
                   />
                   <button 
@@ -439,7 +440,7 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                   type="email" 
                   value={email}
                   onChange={(e) => validateEmail(e.target.value)}
-                  placeholder="ARNA.HAZARIKA@EMAIL.COM" 
+                  placeholder="ENTER YOUR EMAIL" 
                   className={!emailValid ? 'error-input' : ''}
                   required
                 />
@@ -540,7 +541,10 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                     type="button" 
                     className="auth-submit-btn" 
                     style={{ marginTop: '5px', padding: '8px' }}
-                    onClick={onAuthSuccess}
+                    onClick={() => {
+                      verifyMockUser(email);
+                      onAuthSuccess();
+                    }}
                   >
                     AUTO VERIFY & ENTER SITE
                   </button>
