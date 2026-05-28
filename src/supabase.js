@@ -97,6 +97,7 @@ export async function registerUser(email, password, name, phone) {
     email,
     password,
     options: {
+      emailRedirectTo: window.location.origin,
       data: {
         full_name: name.toUpperCase(),
         phone: phone,
