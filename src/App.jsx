@@ -354,7 +354,7 @@ export default function App() {
   useEffect(() => {
     const handleUrlHash = () => {
       const hash = window.location.hash || window.location.search;
-      if (hash.includes('type=recovery') || hash.includes('recovery') || hash.includes('access_token')) {
+      if (hash.includes('type=recovery') || hash.includes('recovery')) {
         setAuthModalMode('RESET_PASSWORD');
       }
     };
