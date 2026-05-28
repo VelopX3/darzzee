@@ -132,6 +132,12 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
           showToast("PASSWORD IS TOO WEAK!");
           return;
         }
+        // Basic phone number validation
+        const phoneDigits = phone.replace(/[^0-9]/g, '');
+        if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+          showToast("PLEASE ENTER A VALID PHONE NUMBER (7-15 DIGITS)!");
+          return;
+        }
         setLoading(true);
         try {
           await registerUser(email, password, name, phone);
@@ -168,8 +174,8 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
           showToast("PASSWORDS DO NOT MATCH!");
           return;
         }
-        if (password.length < 6) {
-          showToast("PASSWORD MUST BE AT LEAST 6 CHARACTERS!");
+        if (passwordStrength.score < 2) {
+          showToast("PASSWORD IS TOO WEAK!");
           return;
         }
         setLoading(true);
@@ -476,8 +482,8 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                   <input 
                     type={showPassword ? 'text' : 'password'}
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••" 
+                    onChange={(e) => checkPasswordStrength(e.target.value)}
+                    placeholder="ENTER YOUR PASSWORD" 
                     required
                   />
                   <button 
@@ -488,6 +494,20 @@ export default function AuthModal({ onAuthSuccess, showToast, initialMode = 'SIG
                     {showPassword ? 'HIDE' : 'SHOW'}
                   </button>
                 </div>
+
+                {password.length > 0 && (
+                  <div className="password-strength-container">
+                    <div className="password-strength-label">
+                      STRENGTH: <span className={`strength-badge ${passwordStrength.text.toLowerCase()}`}>{passwordStrength.text}</span>
+                    </div>
+                    <div className="password-strength-bar-group">
+                      <div className={`strength-bar ${passwordStrength.score >= 1 ? 'active ' + passwordStrength.text.toLowerCase() : ''}`} />
+                      <div className={`strength-bar ${passwordStrength.score >= 2 ? 'active ' + passwordStrength.text.toLowerCase() : ''}`} />
+                      <div className={`strength-bar ${passwordStrength.score >= 3 ? 'active ' + passwordStrength.text.toLowerCase() : ''}`} />
+                      <div className={`strength-bar ${passwordStrength.score >= 4 ? 'active ' + passwordStrength.text.toLowerCase() : ''}`} />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="auth-field-group">

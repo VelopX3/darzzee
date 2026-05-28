@@ -615,7 +615,7 @@ export default function App() {
     );
   }
 
-  if (!currentUser) {
+  if (!currentUser || authModalMode === 'RESET_PASSWORD') {
     return (
       <>
         <AuthModal 
