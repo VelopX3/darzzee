@@ -2908,12 +2908,24 @@ footer {
    ========================================================================== */
 
 @media (min-width: 769px) {
-  body {
+  body.has-custom-cursor {
     cursor: none;
   }
-  a, button, select, input, textarea, option, [role="button"],
-  [class*="card"], [class*="btn"], [class*="option"], [class*="dot"], [class*="indicator"],
-  .gallery-item, .logo-container, .nav-item {
+  body.has-custom-cursor a,
+  body.has-custom-cursor button,
+  body.has-custom-cursor select,
+  body.has-custom-cursor input,
+  body.has-custom-cursor textarea,
+  body.has-custom-cursor option,
+  body.has-custom-cursor [role="button"],
+  body.has-custom-cursor [class*="card"],
+  body.has-custom-cursor [class*="btn"],
+  body.has-custom-cursor [class*="option"],
+  body.has-custom-cursor [class*="dot"],
+  body.has-custom-cursor [class*="indicator"],
+  body.has-custom-cursor .gallery-item,
+  body.has-custom-cursor .logo-container,
+  body.has-custom-cursor .nav-item {
     cursor: none !important;
   }
 }

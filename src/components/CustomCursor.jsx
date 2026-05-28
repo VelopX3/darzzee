@@ -14,7 +14,12 @@ export default function CustomCursor() {
     checkDevice();
     window.addEventListener('resize', checkDevice);
 
-    if (isMobile) return;
+    if (isMobile) {
+      document.body.classList.remove('has-custom-cursor');
+      return;
+    }
+
+    document.body.classList.add('has-custom-cursor');
 
     const dot = document.querySelector('.custom-cursor-dot');
     if (!dot) return;
@@ -54,6 +59,7 @@ export default function CustomCursor() {
     document.addEventListener('click', handleMouseClick);
 
     return () => {
+      document.body.classList.remove('has-custom-cursor');
       window.removeEventListener('resize', checkDevice);
       window.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseleave', handleMouseLeave);

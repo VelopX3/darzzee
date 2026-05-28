@@ -9,7 +9,7 @@ const actualKey = (supabaseAnonKey && !supabaseAnonKey.includes('mock')) ? supab
 
 export const supabase = createClient(actualUrl, actualKey);
 
-export const isMock = !supabaseUrl || supabaseUrl.includes('mock') || !supabaseAnonKey || supabaseAnonKey.includes('mock');
+export const isMock = false; // Officially launched - mock mode disabled completely
 
 // --- WRAPPER API FUNCTIONS ---
 
