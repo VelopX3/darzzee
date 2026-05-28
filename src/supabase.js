@@ -113,6 +113,10 @@ export async function registerUser(email, password, name, phone) {
 
   if (error) throw error;
   
+  if (!data?.user) {
+    throw new Error("ACCOUNT ALREADY EXISTS!");
+  }
+  
   try {
     await supabase.from('profiles').upsert({
       id: data.user.id,
