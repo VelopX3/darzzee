@@ -618,7 +618,6 @@ export default function App() {
   if (!currentUser) {
     return (
       <>
-        <CustomCursor />
         <AuthModal 
           initialMode={authModalMode}
           onAuthSuccess={() => {
