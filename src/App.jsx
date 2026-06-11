@@ -378,6 +378,7 @@ export default function App() {
     const unsubscribe = subscribeToAuthChanges(async (user) => {
       if (user) {
         setCurrentUser(user);
+        setLoadingAuth(false);
         try {
           const fetchedProfile = await getUserProfile(user.uid, user.email, user.phoneNumber);
           setProfile(fetchedProfile);
@@ -391,8 +392,8 @@ export default function App() {
         setCurrentUser(null);
         setProfile({ name: '', email: '', phone: '' });
         setBookings([]);
+        setLoadingAuth(false);
       }
-      setLoadingAuth(false);
     });
     return unsubscribe;
   }, []);

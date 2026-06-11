@@ -7,7 +7,20 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.en
 const actualUrl = (supabaseUrl && !supabaseUrl.includes('mock')) ? supabaseUrl : 'https://placeholder-project.supabase.co';
 const actualKey = (supabaseAnonKey && !supabaseAnonKey.includes('mock')) ? supabaseAnonKey : 'placeholder-anon-key';
 
-export const supabase = createClient(actualUrl, actualKey);
+// Global fetch wrapper to enforce a 5-second timeout on all Supabase requests
+const customFetch = (url, options) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+    clearTimeout(timeoutId);
+  });
+};
+
+export const supabase = createClient(actualUrl, actualKey, {
+  global: {
+    fetch: customFetch
+  }
+});
 
 export const isMock = false; // Officially launched - mock mode disabled completely
 
@@ -45,20 +58,28 @@ export function subscribeToAuthChanges(callback) {
     } else {
       callback(null);
     }
+  }).catch((err) => {
+    console.warn("Auth check failed:", err);
+    callback(null);
   });
 
   // Listen to changes
-  const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-    if (session) {
-      callback(session.user);
-    } else {
-      callback(null);
-    }
-  });
+  try {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        callback(session.user);
+      } else {
+        callback(null);
+      }
+    });
 
-  return () => {
-    subscription.unsubscribe();
-  };
+    return () => {
+      subscription?.unsubscribe();
+    };
+  } catch (err) {
+    console.warn("Auth listener failed:", err);
+    return () => {};
+  }
 }
 
 // 2. Register user
