@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import Lenis from 'lenis';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 import HomeView from './components/HomeView';
 import TailorsView from './components/TailorsView';
@@ -879,6 +880,9 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {/* Vercel Speed Insights */}
+      <SpeedInsights />
     </div>
   );
 }
