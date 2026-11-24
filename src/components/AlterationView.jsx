@@ -1,240 +1,221 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef, useState } from 'react';
+import { useRouter } from '../lib/router';
+import { cleanText, isValidPincode } from '../lib/validation';
+import { friendlyError, uploadUserFile, validateUpload, UPLOAD_RULES } from '../supabase';
+import { FieldError, FormError, PageLoader, SignInPrompt, Spinner } from './ui';
 
-export default function AlterationView({ showToast, navigateTo }) {
+export default function AlterationView({ user, authReady, showToast, onSubmitBooking }) {
+  const { navigate } = useRouter();
   const [description, setDescription] = useState('');
-  const [street, setStreet] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('');
-  const [pincode, setPincode] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('cod'); // 'cod' or 'online'
-  
-  // Drag and drop states
-  const [uploadedFile, setUploadedFile] = useState(null);
+  const [address, setAddress] = useState({ street: '', city: '', state: '', pincode: '' });
+  const [paymentMethod, setPaymentMethod] = useState('cod');
+  const [file, setFile] = useState(null);
+  const [fileError, setFileError] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
+  const submittingRef = useRef(false);
   const fileInputRef = useRef(null);
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setUploadedFile(e.dataTransfer.files[0]);
-      showToast(`Selected file: ${e.dataTransfer.files[0].name}`);
+  const pickFile = (f) => {
+    if (!f) return;
+    const problem = validateUpload(f, 'photo');
+    if (problem) {
+      setFile(null);
+      setFileError(problem);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
     }
+    setFileError('');
+    setFile(f);
   };
 
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setUploadedFile(e.target.files[0]);
-      showToast(`Selected file: ${e.target.files[0].name}`);
-    }
+  const setAddr = (key, value) => setAddress((prev) => ({ ...prev, [key]: value }));
+
+  const validate = () => {
+    if (cleanText(description, 1000).length < 10) return 'Please describe the alteration (at least 10 characters).';
+    if (cleanText(address.street, 200).length < 5) return 'Please enter your full street address.';
+    if (cleanText(address.city, 60).length < 2) return 'Please enter your city.';
+    if (cleanText(address.state, 60).length < 2) return 'Please enter your state.';
+    if (!isValidPincode(address.pincode)) return 'Please enter a valid 6-digit pincode.';
+    return null;
   };
 
-  const triggerFileBrowser = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    // Simulate submission
-    showToast(`Alteration Request Sent successfully! Method: ${paymentMethod.toUpperCase()}`);
-    
-    // Reset fields
-    setDescription('');
-    setStreet('');
-    setCity('');
-    setState('');
-    setPincode('');
-    setUploadedFile(null);
-    setPaymentMethod('cod');
+    if (submittingRef.current) return;
+    const problem = validate();
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    setFormError('');
+    submittingRef.current = true;
+    setSubmitting(true);
 
-    // Route to profile page after order placement
-    navigateTo('profile', true);
+    let photoPath;
+    if (file) {
+      try {
+        photoPath = await uploadUserFile('alteration-photos', user.id, file, 'photo');
+      } catch (err) {
+        console.warn('[darzzee] alteration photo upload failed', err?.message);
+        showToast('Your photo could not be uploaded — the request will be sent without it.', 'error');
+      }
+    }
+
+    const cleanAddress = {
+      street: cleanText(address.street, 200),
+      city: cleanText(address.city, 60),
+      state: cleanText(address.state, 60),
+      pincode: address.pincode.trim()
+    };
+
+    try {
+      await onSubmitBooking({
+        requestType: 'alteration',
+        tailorName: 'Alteration desk',
+        tailorCity: cleanAddress.city,
+        garment: 'Alteration',
+        fabric: 'Customer garment',
+        notes: cleanText(description, 1000),
+        photoPath,
+        consultationMode: 'pickup',
+        measurements: null,
+        address: cleanAddress,
+        speed: 'normal',
+        paymentMethod,
+        total: 0, // quoted after the tailor inspects the garment
+        status: 'assigned',
+        date: new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })
+      });
+      showToast('Alteration request sent! We’ll contact you to schedule the pickup.', 'success');
+      navigate('/profile#bookings');
+    } catch (err) {
+      console.error('[darzzee] alteration request failed', err);
+      const msg = friendlyError(err, 'We could not send your request. Please try again.');
+      setFormError(msg);
+      showToast(msg, 'error');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
 
   return (
     <div className="alteration-page-container">
-      <div className="page-header-container" style={{ padding: '0 0 30px' }}>
-        <h2 className="page-title">ALTERATION SERVICE</h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginTop: '-15px' }}>
-          Have clothes that don't fit? Send photo & description, our tailor will collect it.
+      <div className="page-header-container align-left">
+        <h1 className="page-title">Alteration Service</h1>
+        <p className="page-lede">
+          Clothes that don’t fit? Describe the change and add a photo — our tailor collects the garment from your door, alters it and brings it back.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit}>
-        <div className="alteration-grid">
-          
-          {/* Left Column: File Upload & Description */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            
-            {/* Drag & Drop Card */}
-            <div 
-              className="upload-card-brutalist"
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={triggerFileBrowser}
-              style={{
-                borderColor: isDragOver ? 'var(--color-orange)' : 'var(--color-border)',
-                backgroundColor: isDragOver ? 'var(--color-gray-light)' : '#ffffff',
-                borderStyle: isDragOver ? 'solid' : 'dashed',
-                borderWidth: isDragOver ? 'var(--border-width-thick)' : 'var(--border-width-thin)'
-              }}
-            >
-              <div className="upload-label-optional">OPTIONAL</div>
-              
-              <div className="upload-icon-wrapper">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      {!authReady ? (
+        <PageLoader label="Checking your session…" />
+      ) : !user ? (
+        <SignInPrompt title="Request an alteration" message="Sign in or create a free account to request a doorstep alteration pickup." />
+      ) : (
+        <form onSubmit={handleSubmit} noValidate aria-busy={submitting}>
+          <div className="alteration-grid">
+            <div className="stack">
+              <div
+                className={`upload-card-brutalist ${isDragOver ? 'is-dragover' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                onDragLeave={() => setIsDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragOver(false);
+                  pickFile(e.dataTransfer.files?.[0]);
+                }}
+              >
+                <span className="upload-label-optional">Optional</span>
+                <svg className="upload-icon-wrapper" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
                 </svg>
-              </div>
-
-              <div className="upload-text">
-                {uploadedFile ? (
-                  <span>File: {uploadedFile.name}</span>
-                ) : (
-                  <>Drag & drop outfit photo or <span>Browse files</span></>
+                <label htmlFor="alteration-photo" className="upload-text">
+                  {file ? <>Selected: <span className="file-name">{file.name}</span></> : <>Drag &amp; drop an outfit photo or <span className="underline">browse files</span></>}
+                </label>
+                <span className="upload-hint">{UPLOAD_RULES.photo.hint}</span>
+                <input
+                  id="alteration-photo"
+                  ref={fileInputRef}
+                  type="file"
+                  className="file-input-overlay"
+                  accept={UPLOAD_RULES.photo.accept}
+                  onChange={(e) => pickFile(e.target.files?.[0])}
+                  aria-describedby={fileError ? 'photo-error' : undefined}
+                />
+                {file && (
+                  <button type="button" className="text-link remove-file" onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}>
+                    Remove photo
+                  </button>
                 )}
               </div>
+              <FieldError id="photo-error">{fileError}</FieldError>
 
-              <input 
-                type="file" 
-                ref={fileInputRef}
-                style={{ display: 'none' }} 
-                accept="image/*"
-                onChange={handleFileChange}
-              />
-            </div>
-
-            {/* Description box */}
-            <div className="form-group-custom">
-              <label className="form-label" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' }}>
-                Describe alteration details
-              </label>
-              <textarea 
-                className="alteration-textarea"
-                placeholder="E.g. shorten sleeves by 2 inches, tighten waist, taper trouser legs..."
-                required
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {/* Right Column: Address & Payments */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            
-            {/* Address inputs */}
-            <div className="booking-form-card">
-              <h4 className="section-subtitle" style={{ marginTop: 0 }}>PICKUP ADDRESS</h4>
-              
-              <div className="form-group-custom" style={{ marginBottom: '10px' }}>
-                <label style={{ fontSize: '10px', fontWeight: 600 }}>Street Address</label>
-                <input 
-                  type="text" 
-                  placeholder="Apartment, Street and Area" 
+              <div className="form-group-custom">
+                <label htmlFor="alteration-desc">Describe the alteration</label>
+                <textarea
+                  id="alteration-desc"
+                  className="alteration-textarea"
+                  placeholder="E.g. shorten sleeves by 2 inches, tighten waist, taper trouser legs…"
                   required
-                  value={street}
-                  onChange={(e) => setStreet(e.target.value)}
+                  minLength={10}
+                  maxLength={1000}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
                 />
               </div>
+            </div>
 
-              <div className="form-group-custom" style={{ marginBottom: '10px' }}>
-                <label style={{ fontSize: '10px', fontWeight: 600 }}>City</label>
-                <input 
-                  type="text" 
-                  placeholder="City" 
-                  required
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                />
-              </div>
-
-              <div className="form-row-2col" style={{ margin: 0, gap: '8px' }}>
+            <div className="stack">
+              <fieldset className="booking-form-card">
+                <legend className="section-subtitle">Pickup address</legend>
                 <div className="form-group-custom">
-                  <label style={{ fontSize: '10px', fontWeight: 600 }}>State</label>
-                  <input 
-                    type="text" 
-                    placeholder="State" 
-                    required
-                    value={state}
-                    onChange={(e) => setState(e.target.value)}
-                  />
+                  <label htmlFor="alt-street">Street address</label>
+                  <input id="alt-street" type="text" autoComplete="street-address" placeholder="Apartment, street and area" required maxLength={200} value={address.street} onChange={(e) => setAddr('street', e.target.value)} />
                 </div>
                 <div className="form-group-custom">
-                  <label style={{ fontSize: '10px', fontWeight: 600 }}>Pincode</label>
-                  <input 
-                    type="text" 
-                    placeholder="Pincode" 
-                    required
-                    value={pincode}
-                    onChange={(e) => setPincode(e.target.value)}
-                  />
+                  <label htmlFor="alt-city">City</label>
+                  <input id="alt-city" type="text" autoComplete="address-level2" required maxLength={60} value={address.city} onChange={(e) => setAddr('city', e.target.value)} />
                 </div>
-              </div>
-            </div>
-
-            {/* Payment options */}
-            <div className="booking-form-card">
-              <h4 className="section-subtitle" style={{ marginTop: 0 }}>PAYMENT METHOD</h4>
-              
-              {/* COD Radio Card */}
-              <div 
-                className={`selectable-option-card payment-card ${paymentMethod === 'cod' ? 'active' : ''}`}
-                onClick={() => setPaymentMethod('cod')}
-              >
-                <input 
-                  type="radio" 
-                  name="alterPayment"
-                  checked={paymentMethod === 'cod'}
-                  onChange={() => setPaymentMethod('cod')}
-                />
-                <div>
-                  <div className="label">CASH ON COLLECTION</div>
-                  <div style={{ fontSize: '9px', textTransform: 'none', fontWeight: 500 }}>
-                    Pay our agent when they collect the clothes
+                <div className="form-row-2col">
+                  <div className="form-group-custom">
+                    <label htmlFor="alt-state">State</label>
+                    <input id="alt-state" type="text" autoComplete="address-level1" required maxLength={60} value={address.state} onChange={(e) => setAddr('state', e.target.value)} />
+                  </div>
+                  <div className="form-group-custom">
+                    <label htmlFor="alt-pincode">Pincode</label>
+                    <input id="alt-pincode" type="text" inputMode="numeric" autoComplete="postal-code" maxLength={6} required value={address.pincode} onChange={(e) => setAddr('pincode', e.target.value.replace(/\D/g, ''))} />
                   </div>
                 </div>
-              </div>
+              </fieldset>
 
-              {/* Online Payment Radio Card */}
-              <div 
-                className={`selectable-option-card payment-card ${paymentMethod === 'online' ? 'active-online' : ''}`}
-                onClick={() => setPaymentMethod('online')}
-              >
-                <input 
-                  type="radio" 
-                  name="alterPayment"
-                  checked={paymentMethod === 'online'}
-                  onChange={() => setPaymentMethod('online')}
-                  style={{ accentColor: '#000' }}
-                />
-                <div>
-                  <div className="label">ONLINE PAYMENT</div>
-                  <div style={{ fontSize: '9px', textTransform: 'none', fontWeight: 500 }}>
-                    Pay securely online using Credit/Debit Card/UPI
-                  </div>
-                </div>
-              </div>
+              <fieldset className="booking-form-card">
+                <legend className="section-subtitle">Payment method</legend>
+                {[
+                  { value: 'cod', title: 'Cash on collection', sub: 'Pay our agent when they collect the clothes' },
+                  { value: 'online', title: 'Online payment', sub: 'Pay online using credit/debit card or UPI' }
+                ].map((opt) => (
+                  <label key={opt.value} className={`selectable-option-card payment-card ${paymentMethod === opt.value ? 'active' : ''}`}>
+                    <input type="radio" name="alterPayment" value={opt.value} checked={paymentMethod === opt.value} onChange={() => setPaymentMethod(opt.value)} />
+                    <span>
+                      <span className="label">{opt.title}</span>
+                      <span className="subtext">{opt.sub}</span>
+                    </span>
+                  </label>
+                ))}
+                <p className="form-note">The alteration price is quoted after the tailor inspects your garment.</p>
+              </fieldset>
+
+              <FormError id="alteration-error">{formError}</FormError>
+              <button type="submit" className="send-request-btn" disabled={submitting}>
+                {submitting ? <><Spinner /> Sending request…</> : 'Send request'}
+              </button>
             </div>
-
-            <button type="submit" className="send-request-btn">
-              Send Request
-            </button>
           </div>
-        </div>
-      </form>
+        </form>
+      )}
     </div>
   );
 }

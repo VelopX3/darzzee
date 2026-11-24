@@ -6,19 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.10.3",
-    "@supabase/supabase-js": "^2.106.1",
-    "firebase": "^12.13.0",
+    "@supabase/supabase-js": "^2.119.2",
     "framer-motion": "^11.0.0",
-    "jimp": "^1.6.1",
     "lenis": "^1.3.23",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",

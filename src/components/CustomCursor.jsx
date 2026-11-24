@@ -1,76 +1,57 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
+const INTERACTIVE = 'a, button, select, input, textarea, label, summary, [role="button"], [role="tab"]';
+
+/** Decorative cursor dot for mouse users only. Touch devices, pen/coarse
+ *  pointers and reduced-motion users keep the native cursor. */
 export default function CustomCursor() {
-  const [isMobile, setIsMobile] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const dotRef = useRef(null);
 
   useEffect(() => {
-    // Check if device is touch or mobile
-    const checkDevice = () => {
-      const mobile = window.matchMedia("(max-width: 768px)").matches || 
-                     ('ontouchstart' in window) || 
-                     (navigator.maxTouchPoints > 0);
-      setIsMobile(mobile);
-    };
-    checkDevice();
-    window.addEventListener('resize', checkDevice);
+    const mq = window.matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)');
+    const update = () => setEnabled(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
 
-    if (isMobile) {
-      document.body.classList.remove('has-custom-cursor');
-      return;
-    }
-
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const dot = dotRef.current;
+    if (!dot) return undefined;
     document.body.classList.add('has-custom-cursor');
 
-    const dot = document.querySelector('.custom-cursor-dot');
-    if (!dot) return;
-
-    const handleMouseMove = (e) => {
-      dot.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0)`;
-      dot.style.opacity = '1';
-
-      // Dynamic hover state check
-      const target = e.target;
-      if (target) {
-        const isInteractive = target.closest('a, button, select, input, textarea, [role="button"], [class*="card"], [class*="btn"], [class*="option"], [class*="dot"], [class*="indicator"], .gallery-item, .logo-container, .nav-item');
-        if (isInteractive) {
-          dot.classList.add('hovered');
-        } else {
-          dot.classList.remove('hovered');
-        }
+    let frame = 0;
+    let x = 0;
+    let y = 0;
+    const onMove = (e) => {
+      x = e.clientX;
+      y = e.clientY;
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          dot.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+          frame = 0;
+        });
       }
-    };
-
-    const handleMouseLeave = () => {
-      dot.style.opacity = '0';
-    };
-
-    const handleMouseEnter = () => {
       dot.style.opacity = '1';
+      dot.classList.toggle('hovered', Boolean(e.target?.closest?.(INTERACTIVE)));
     };
+    const hide = () => { dot.style.opacity = '0'; };
+    const show = () => { dot.style.opacity = '1'; };
 
-    // Reset hover classes on clicks to avoid stuck cursor states during HMR/state navigation
-    const handleMouseClick = () => {
-      dot.classList.remove('hovered');
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseleave', handleMouseLeave);
-    document.addEventListener('mouseenter', handleMouseEnter);
-    document.addEventListener('click', handleMouseClick);
-
+    window.addEventListener('pointermove', onMove, { passive: true });
+    document.documentElement.addEventListener('mouseleave', hide);
+    document.documentElement.addEventListener('mouseenter', show);
     return () => {
+      cancelAnimationFrame(frame);
       document.body.classList.remove('has-custom-cursor');
-      window.removeEventListener('resize', checkDevice);
-      window.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseleave', handleMouseLeave);
-      document.removeEventListener('mouseenter', handleMouseEnter);
-      document.removeEventListener('click', handleMouseClick);
+      window.removeEventListener('pointermove', onMove);
+      document.documentElement.removeEventListener('mouseleave', hide);
+      document.documentElement.removeEventListener('mouseenter', show);
     };
-  }, [isMobile]);
+  }, [enabled]);
 
-  if (isMobile) return null;
-
-  return (
-    <div className="custom-cursor-dot" />
-  );
+  if (!enabled) return null;
+  return <div ref={dotRef} className="custom-cursor-dot" aria-hidden="true" />;
 }

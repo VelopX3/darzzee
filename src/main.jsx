@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './lib/auth-utils'; // captures the landing URL before anything else runs
 import App from './App.jsx';
 import './index.css';
 

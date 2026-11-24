@@ -1,610 +1,430 @@
 import { createClient } from '@supabase/supabase-js';
+import { friendlyError, isAdminUser, initialUrl } from './lib/auth-utils';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+export { friendlyError, isAdminUser, initialUrl };
 
-// Prevent JS crash if credentials are empty or 'mock' by using safe placeholders
-const actualUrl = (supabaseUrl && !supabaseUrl.includes('mock')) ? supabaseUrl : 'https://placeholder-project.supabase.co';
-const actualKey = (supabaseAnonKey && !supabaseAnonKey.includes('mock')) ? supabaseAnonKey : 'placeholder-anon-key';
+// Public, browser-safe values only (Supabase URL + anon/publishable key).
+// Row Level Security on the database is what protects data — never put a
+// service-role key in a VITE_ variable.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-// Global fetch wrapper to enforce a 5-second timeout on all Supabase requests
-const customFetch = (url, options) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
-    clearTimeout(timeoutId);
-  });
-};
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
-export const supabase = createClient(actualUrl, actualKey, {
-  global: {
-    fetch: customFetch
-  }
-});
 
-export const isMock = false; // Officially launched - mock mode disabled completely
+if (!isSupabaseConfigured && import.meta.env.DEV) {
+  console.warn('[darzzee] VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are not set. Copy .env.example to .env.local.');
+}
 
-// --- WRAPPER API FUNCTIONS ---
+// ---------------------------------------------------------------------------
+// "Remember me": persist the session in localStorage, otherwise only for the
+// lifetime of the browser tab (sessionStorage).
+// ---------------------------------------------------------------------------
+const REMEMBER_KEY = 'darzzee_remember_session';
 
-// 1. Subscribe to Auth changes
-export function subscribeToAuthChanges(callback) {
-  if (isMock) {
-    const getSession = () => {
-      try {
-        const session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-        callback(session || null);
-      } catch (e) {
-        callback(null);
-      }
-    };
-    getSession();
-
-    const handleStorageChange = () => {
-      getSession();
-    };
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('mock-session-change', handleStorageChange);
-
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('mock-session-change', handleStorageChange);
-    };
-  }
-
-  // Check initial session
-  supabase.auth.getSession().then(({ data: { session } }) => {
-    if (session) {
-      callback(session.user);
-    } else {
-      callback(null);
-    }
-  }).catch((err) => {
-    console.warn("Auth check failed:", err);
-    callback(null);
-  });
-
-  // Listen to changes
+function safeStorage(kind) {
   try {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        callback(session.user);
-      } else {
-        callback(null);
-      }
-    });
-
-    return () => {
-      subscription?.unsubscribe();
-    };
-  } catch (err) {
-    console.warn("Auth listener failed:", err);
-    return () => {};
+    const s = window[kind];
+    const probe = '__darzzee_probe__';
+    s.setItem(probe, '1');
+    s.removeItem(probe);
+    return s;
+  } catch {
+    return null;
   }
 }
 
-// 2. Register user
-export async function registerUser(email, password, name, phone) {
-  if (isMock) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-    if (users[email.toLowerCase()]) {
-      throw new Error("USER ALREADY EXISTS!");
+const local = typeof window !== 'undefined' ? safeStorage('localStorage') : null;
+const session = typeof window !== 'undefined' ? safeStorage('sessionStorage') : null;
+const memory = new Map();
+
+export function getRememberPreference() {
+  return local?.getItem(REMEMBER_KEY) !== 'false';
+}
+
+export function setRememberPreference(remember) {
+  local?.setItem(REMEMBER_KEY, remember ? 'true' : 'false');
+}
+
+const authStorage = {
+  getItem(key) {
+    return local?.getItem(key) ?? session?.getItem(key) ?? memory.get(key) ?? null;
+  },
+  setItem(key, value) {
+    const target = getRememberPreference() ? local : session;
+    if (target) {
+      target.setItem(key, value);
+      // Make sure a stale copy does not linger in the other store.
+      (target === local ? session : local)?.removeItem(key);
+    } else {
+      memory.set(key, value);
     }
-
-    const mockUser = {
-      uid: 'mock-uid-' + Math.random().toString(36).substring(2, 11),
-      email: email.toLowerCase(),
-      verified: false, // New mock users start as unverified
-      user_metadata: {
-        full_name: name.toUpperCase(),
-        phone: phone,
-        profile: {
-          name: name.toUpperCase(),
-          email: email.toLowerCase(),
-          phone: phone
-        },
-        bookings: []
-      }
-    };
-
-    users[email.toLowerCase()] = { ...mockUser, password };
-    localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-    // DO NOT set the session here to prevent automatic login without verification
-
-    return mockUser;
+  },
+  removeItem(key) {
+    local?.removeItem(key);
+    session?.removeItem(key);
+    memory.delete(key);
   }
+};
 
+// Every Supabase request gets a timeout so the UI can never hang forever on
+// a stalled network request. Respects any abort signal supabase-js passes in.
+const REQUEST_TIMEOUT_MS = 15000;
+const fetchWithTimeout = (url, options = {}) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const upstream = options.signal;
+  if (upstream) {
+    if (upstream.aborted) controller.abort();
+    else upstream.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+};
+
+export const supabase = createClient(
+  // createClient throws on an empty URL; a non-routable placeholder keeps the
+  // app rendering (public pages still work) when env vars are missing.
+  isSupabaseConfigured ? supabaseUrl : 'https://not-configured.supabase.co',
+  isSupabaseConfigured ? supabaseAnonKey : 'not-configured',
+  {
+    auth: {
+      storage: authStorage,
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    },
+    global: { fetch: fetchWithTimeout }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function assertConfigured() {
+  if (!isSupabaseConfigured) {
+    const err = new Error('Service is not configured.');
+    err.code = 'not_configured';
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+/**
+ * Subscribes to auth state. The callback receives (event, session).
+ * Supabase emits INITIAL_SESSION on subscribe, so no separate getSession call
+ * is needed. The callback is deferred so that any Supabase call made inside
+ * it cannot deadlock on the auth lock (documented supabase-js pitfall).
+ */
+export function subscribeToAuthChanges(callback) {
+  const { data } = supabase.auth.onAuthStateChange((event, sess) => {
+    setTimeout(() => callback(event, sess), 0);
+  });
+  return () => data?.subscription?.unsubscribe();
+}
+
+export async function registerUser({ email, password, name, phone }) {
+  assertConfigured();
+  const cleanName = name.trim().toUpperCase();
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
       emailRedirectTo: window.location.origin,
       data: {
-        full_name: name.toUpperCase(),
-        phone: phone,
-        profile: {
-          name: name.toUpperCase(),
-          email: email.toUpperCase(),
-          phone: phone
-        },
-        bookings: []
+        full_name: cleanName,
+        phone,
+        profile: { name: cleanName, email: email.toUpperCase(), phone }
       }
     }
   });
-
   if (error) throw error;
-  
-  if (!data?.user) {
-    throw new Error("ACCOUNT ALREADY EXISTS!");
-  }
-  
-  try {
-    await supabase.from('profiles').upsert({
-      id: data.user.id,
-      name: name.toUpperCase(),
-      email: email.toUpperCase(),
-      phone: phone,
-      updated_at: new Date().toISOString()
-    });
-  } catch (err) {
-    console.warn("Could not insert to public.profiles table (it may not exist). Using user_metadata as fallback.", err);
+
+  // With email confirmation enabled, Supabase does not reveal whether the
+  // address is taken: it returns a user with no identities instead.
+  if (!data?.user || (Array.isArray(data.user.identities) && data.user.identities.length === 0)) {
+    const err = new Error('User already registered');
+    err.code = 'user_already_exists';
+    throw err;
   }
 
-  return data.user;
+  if (data.session) {
+    // Confirmation disabled: the user is signed in immediately.
+    await upsertProfileRow(data.user.id, { name: cleanName, email, phone });
+  }
+  return { user: data.user, session: data.session, needsConfirmation: !data.session };
 }
 
-// 3. Login user
-export async function loginUser(email, password) {
-  if (isMock) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    
-    // Check secure admin login credentials
-    if (email.toLowerCase() === 'admin@darzzee.com' && password === 'darzzeeadmin@delhi2026') {
-      const adminUser = {
-        uid: 'mock-admin-uid',
-        email: 'admin@darzzee.com',
-        user_metadata: {
-          full_name: 'DARZZEE ADMINISTRATOR',
-          phone: '0000000000',
-          profile: {
-            name: 'DARZZEE ADMINISTRATOR',
-            email: 'admin@darzzee.com',
-            phone: '0000000000'
-          },
-          bookings: []
-        }
-      };
-      localStorage.setItem('darzzee_mock_session', JSON.stringify(adminUser));
-      window.dispatchEvent(new Event('mock-session-change'));
-      return adminUser;
-    }
-
-    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-    const user = users[email.toLowerCase()];
-
-    if (!user || user.password !== password) {
-      throw new Error("INVALID EMAIL OR PASSWORD!");
-    }
-
-    if (user.verified === false) {
-      throw new Error("PLEASE VERIFY YOUR EMAIL FIRST!");
-    }
-
-    const { password: _, ...userSession } = user;
-    localStorage.setItem('darzzee_mock_session', JSON.stringify(userSession));
-    window.dispatchEvent(new Event('mock-session-change'));
-    return userSession;
-  }
-
-  const { data, error } = await supabase.auth.signInWithPassword({
+export async function resendConfirmation(email) {
+  assertConfigured();
+  const { error } = await supabase.auth.resend({
+    type: 'signup',
     email,
-    password
+    options: { emailRedirectTo: window.location.origin }
   });
+  if (error) throw error;
+}
 
+export async function loginUser(email, password) {
+  assertConfigured();
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
   return data.user;
 }
 
-// Helper to verify mock user and log them in
-export function verifyMockUser(email) {
-  if (isMock) {
-    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-    const user = users[email.toLowerCase()];
-    if (user) {
-      user.verified = true;
-      users[email.toLowerCase()] = user;
-      localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-      
-      const { password: _, ...userSession } = user;
-      localStorage.setItem('darzzee_mock_session', JSON.stringify(userSession));
-      window.dispatchEvent(new Event('mock-session-change'));
-    }
-  }
-}
-
-// 4. Logout user
-export async function logoutUser() {
-  if (isMock) {
-    localStorage.removeItem('darzzee_mock_session');
-    window.dispatchEvent(new Event('mock-session-change'));
-    return;
-  }
-
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
-}
-
-// 5. Get User Profile
-export async function getUserProfile(uid, userEmail, userPhone) {
-  if (isMock) {
-    const session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-    if (session && session.user_metadata && session.user_metadata.profile) {
-      return session.user_metadata.profile;
-    }
-    return {
-      name: session?.user_metadata?.full_name || 'NEW USER',
-      email: (userEmail || session?.email || '').toUpperCase(),
-      phone: userPhone || session?.user_metadata?.phone || ''
-    };
-  }
-
+export async function signInWithGoogle(returnTo = '/') {
+  assertConfigured();
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .single();
-
-    if (data && !error) {
-      return {
-        name: data.name || '',
-        email: (data.email || userEmail || '').toUpperCase(),
-        phone: data.phone || userPhone || ''
-      };
-    }
-  } catch (err) {
-    console.warn("Failed to fetch profiles table, reading from user_metadata instead.", err);
-  }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (user && user.user_metadata && user.user_metadata.profile) {
-    const profile = user.user_metadata.profile;
-    return {
-      name: profile.name || '',
-      email: (profile.email || userEmail || '').toUpperCase(),
-      phone: profile.phone || userPhone || ''
-    };
-  }
-
-  return {
-    name: user?.user_metadata?.full_name || 'NEW USER',
-    email: (userEmail || '').toUpperCase(),
-    phone: userPhone || ''
-  };
-}
-
-// 6. Save User Profile
-export async function saveUserProfile(uid, profileData) {
-  if (isMock) {
-    const session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-    if (session) {
-      session.user_metadata = {
-        ...session.user_metadata,
-        full_name: profileData.name.toUpperCase(),
-        phone: profileData.phone,
-        profile: {
-          name: profileData.name.toUpperCase(),
-          email: profileData.email.toUpperCase(),
-          phone: profileData.phone
-        }
-      };
-      localStorage.setItem('darzzee_mock_session', JSON.stringify(session));
-
-      const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-      if (users[session.email]) {
-        users[session.email] = {
-          ...users[session.email],
-          ...session
-        };
-        localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-      }
-      window.dispatchEvent(new Event('mock-session-change'));
-    }
-    return;
-  }
-
-  let tableSuccess = false;
-  try {
-    const { error } = await supabase
-      .from('profiles')
-      .upsert({
-        id: uid,
-        name: profileData.name.toUpperCase(),
-        email: profileData.email.toUpperCase(),
-        phone: profileData.phone,
-        updated_at: new Date().toISOString()
-      });
-    if (!error) tableSuccess = true;
-  } catch (err) {
-    console.warn("Could not save to public.profiles table, updating user_metadata.", err);
-  }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  const existingMetadata = user?.user_metadata || {};
-  const { error } = await supabase.auth.updateUser({
-    data: {
-      ...existingMetadata,
-      full_name: profileData.name.toUpperCase(),
-      phone: profileData.phone,
-      profile: {
-        name: profileData.name.toUpperCase(),
-        email: profileData.email.toUpperCase(),
-        phone: profileData.phone
-      }
-    }
-  });
-
-  if (error && !tableSuccess) throw error;
-}
-
-// 7. Get User Bookings
-export async function getUserBookings(uid) {
-  if (isMock) {
-    const session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-    if (session && session.user_metadata && session.user_metadata.bookings) {
-      return session.user_metadata.bookings;
-    }
-    const globalBookings = JSON.parse(localStorage.getItem('darzzee_global_bookings') || '[]');
-    return globalBookings.filter((b) => b.userId === uid || b.userEmail === session?.email);
-  }
-
-  try {
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('*')
-      .eq('userId', uid)
-      .order('timestamp', { ascending: false });
-
-    if (data && !error) {
-      return data;
-    }
-  } catch (err) {
-    console.warn("Failed to fetch bookings table, reading from user_metadata instead.", err);
-  }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (user && user.user_metadata && user.user_metadata.bookings) {
-    return user.user_metadata.bookings;
-  }
-
-  return [];
-}
-
-// 8. Create Booking
-export async function createBooking(uid, bookingData) {
-  const completeBooking = {
-    id: bookingData.id || 'booking-' + Math.random().toString(36).substring(2, 11),
-    ...bookingData,
-    userId: uid,
-    timestamp: Date.now()
-  };
-
-  try {
-    const globalBookings = JSON.parse(localStorage.getItem('darzzee_global_bookings') || '[]');
-    localStorage.setItem('darzzee_global_bookings', JSON.stringify([completeBooking, ...globalBookings]));
-  } catch (err) {
-    console.error("Failed to update global local storage bookings", err);
-  }
-
-  if (isMock) {
-    const session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-    if (session) {
-      const existingBookings = session.user_metadata?.bookings || [];
-      const updatedBookings = [completeBooking, ...existingBookings];
-      session.user_metadata = {
-        ...session.user_metadata,
-        bookings: updatedBookings
-      };
-      localStorage.setItem('darzzee_mock_session', JSON.stringify(session));
-
-      const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-      if (users[session.email]) {
-        users[session.email] = {
-          ...users[session.email],
-          ...session
-        };
-        localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-      }
-      window.dispatchEvent(new Event('mock-session-change'));
-    }
-    return completeBooking;
-  }
-
-  let tableSuccess = false;
-  try {
-    const { data, error } = await supabase
-      .from('bookings')
-      .insert([completeBooking])
-      .select();
-
-    if (data && !error) {
-      tableSuccess = true;
-      return data[0];
-    }
-  } catch (err) {
-    console.warn("Could not insert to bookings table, saving to user_metadata fallback.", err);
-  }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  const existingMetadata = user?.user_metadata || {};
-  const currentBookings = existingMetadata.bookings || [];
-  const updatedBookings = [completeBooking, ...currentBookings];
-
-  const { error: updateError } = await supabase.auth.updateUser({
-    data: {
-      ...existingMetadata,
-      bookings: updatedBookings
-    }
-  });
-
-  if (updateError && !tableSuccess) {
-    throw updateError;
-  }
-
-  return completeBooking;
-}
-
-// 9. Sign in with Google (OAuth)
-export async function signInWithGoogle() {
-  if (isMock) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    const mockGoogleUser = {
-      uid: 'google-mock-uid-' + Math.random().toString(36).substring(2, 11),
-      email: 'google.user@gmail.com',
-      user_metadata: {
-        full_name: 'GOOGLE USER',
-        phone: '9999988888',
-        profile: {
-          name: 'GOOGLE USER',
-          email: 'google.user@gmail.com',
-          phone: '9999988888'
-        },
-        bookings: []
-      }
-    };
-    
-    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-    users['google.user@gmail.com'] = { ...mockGoogleUser, password: 'googlepassword' };
-    localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-    localStorage.setItem('darzzee_mock_session', JSON.stringify(mockGoogleUser));
-    window.dispatchEvent(new Event('mock-session-change'));
-    
-    return mockGoogleUser;
-  }
-
-  const { data, error } = await supabase.auth.signInWithOAuth({
+    sessionStorage.setItem('darzzee_oauth_return', returnTo);
+  } catch { /* storage unavailable — fall back to home */ }
+  const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: {
-      redirectTo: window.location.origin
-    }
+    options: { redirectTo: window.location.origin }
   });
   if (error) throw error;
-  return data;
+  // The browser now navigates to Google; nothing else to do here.
 }
 
-// 10. Send Password Reset Email
-export async function sendPasswordResetEmail(email) {
-  if (isMock) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    return true;
+export function consumeOAuthReturnPath() {
+  try {
+    const p = sessionStorage.getItem('darzzee_oauth_return');
+    sessionStorage.removeItem('darzzee_oauth_return');
+    return p;
+  } catch {
+    return null;
   }
+}
 
-  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+export async function logoutUser() {
+  // Local scope: always clears this browser's session, even if the network
+  // call to revoke the refresh token fails.
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
+  if (error) throw error;
+}
+
+export async function sendPasswordResetEmail(email) {
+  assertConfigured();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
     redirectTo: window.location.origin + '?type=recovery'
   });
   if (error) throw error;
-  return data;
 }
 
-// 11. Reset Password
 export async function resetPassword(newPassword) {
-  if (isMock) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    let session = JSON.parse(localStorage.getItem('darzzee_mock_session'));
-    if (!session) {
-      session = { email: 'google.user@gmail.com', uid: 'mock-google-uid' };
-    }
-    
-    const users = JSON.parse(localStorage.getItem('darzzee_mock_users') || '{}');
-    if (users[session.email]) {
-      users[session.email].password = newPassword;
-      localStorage.setItem('darzzee_mock_users', JSON.stringify(users));
-    }
-    return true;
-  }
-
-  const { data, error } = await supabase.auth.updateUser({
-    password: newPassword
-  });
+  assertConfigured();
+  const { data, error } = await supabase.auth.updateUser({ password: newPassword });
   if (error) throw error;
   return data;
 }
 
-// 12. Get all bookings for Admin
-export async function getAllBookings() {
-  if (isMock) {
-    try {
-      const stored = localStorage.getItem('darzzee_global_bookings');
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      console.error(e);
-      return [];
-    }
+// ---------------------------------------------------------------------------
+// Profile
+// ---------------------------------------------------------------------------
+async function upsertProfileRow(userId, { name, email, phone }) {
+  const { error } = await supabase.from('profiles').upsert({
+    id: userId,
+    name: name.toUpperCase(),
+    email: email.toUpperCase(),
+    phone,
+    updated_at: new Date().toISOString()
+  });
+  if (error) {
+    console.warn('[darzzee] profiles upsert failed, metadata fallback in use:', error.code);
+    return false;
   }
-
-  try {
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('*')
-      .order('timestamp', { ascending: false });
-
-    if (data && !error) {
-      return data;
-    }
-  } catch (err) {
-    console.warn("Failed to fetch bookings table for admin, reading from global localStorage.", err);
-  }
-
-  try {
-    const stored = localStorage.getItem('darzzee_global_bookings');
-    return stored ? JSON.parse(stored) : [];
-  } catch (e) {
-    console.error(e);
-    return [];
-  }
+  return true;
 }
 
-// 13. Update Booking Status for Admin
-export async function updateBookingStatus(bookingId, status) {
-  if (isMock) {
-    try {
-      const globalBookings = JSON.parse(localStorage.getItem('darzzee_global_bookings') || '[]');
-      const idx = globalBookings.findIndex((b) => b.id === bookingId);
-      if (idx !== -1) {
-        globalBookings[idx].status = status;
-        localStorage.setItem('darzzee_global_bookings', JSON.stringify(globalBookings));
+export async function getUserProfile(user) {
+  const meta = user?.user_metadata || {};
+  const fromMeta = {
+    name: meta.profile?.name || meta.full_name || meta.name || '',
+    email: (user?.email || meta.profile?.email || '').toUpperCase(),
+    phone: meta.profile?.phone || meta.phone || ''
+  };
+  if (!user?.id) return fromMeta;
+
+  const { data, error } = await supabase.from('profiles').select('name, email, phone').eq('id', user.id).maybeSingle();
+  if (error || !data) return fromMeta;
+  return {
+    name: data.name || fromMeta.name,
+    email: (user.email || data.email || '').toUpperCase(),
+    phone: data.phone || fromMeta.phone
+  };
+}
+
+export async function saveUserProfile(user, profileData) {
+  assertConfigured();
+  const name = profileData.name.trim().toUpperCase();
+  const phone = profileData.phone.trim();
+  const email = user.email || profileData.email;
+
+  const tableOk = await upsertProfileRow(user.id, { name, email, phone });
+  const { error } = await supabase.auth.updateUser({
+    data: {
+      full_name: name,
+      phone,
+      profile: { name, email: email.toUpperCase(), phone }
+    }
+  });
+  if (error && !tableOk) throw error;
+  return { name, email: email.toUpperCase(), phone };
+}
+
+// ---------------------------------------------------------------------------
+// Bookings
+// ---------------------------------------------------------------------------
+// Fields added after the original bookings table was created. If the live
+// table does not have these columns yet, they are nested inside the
+// `measurements` JSON so nothing the customer typed is lost.
+const EXTENDED_BOOKING_FIELDS = ['notes', 'requestType', 'photoPath'];
+
+function isMissingColumnError(error) {
+  return error && (error.code === 'PGRST204' || error.code === '42703');
+}
+
+export async function getUserBookings(userId) {
+  if (!userId || !isSupabaseConfigured) return [];
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('userId', userId)
+    .order('timestamp', { ascending: false });
+
+  const tableRows = !error && Array.isArray(data) ? data : [];
+
+  // Legacy fallback: bookings saved in user_metadata when the table insert failed.
+  const { data: userData } = await supabase.auth.getUser();
+  const metaRows = Array.isArray(userData?.user?.user_metadata?.bookings) ? userData.user.user_metadata.bookings : [];
+
+  const seen = new Set(tableRows.map((b) => b.id));
+  const merged = [...tableRows, ...metaRows.filter((b) => b && !seen.has(b.id))];
+  return merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+}
+
+export async function createBooking(userId, bookingData) {
+  assertConfigured();
+  if (!userId) throw new Error('Not signed in');
+
+  const record = {
+    ...bookingData,
+    id: bookingData.id || `bk-${crypto.randomUUID()}`,
+    userId,
+    timestamp: Date.now()
+  };
+
+  let { data, error } = await supabase.from('bookings').insert([record]).select();
+
+  if (isMissingColumnError(error)) {
+    const legacy = { ...record };
+    const extras = {};
+    for (const f of EXTENDED_BOOKING_FIELDS) {
+      if (legacy[f] !== undefined) {
+        extras[f] = legacy[f];
+        delete legacy[f];
       }
-    } catch (err) {
-      console.error("Failed to update global bookings status in local storage", err);
     }
-    return true;
+    legacy.measurements = { ...(legacy.measurements || {}), ...extras };
+    ({ data, error } = await supabase.from('bookings').insert([legacy]).select());
   }
 
-  let tableSuccess = false;
-  try {
-    const { data, error } = await supabase
-      .from('bookings')
-      .update({ status: status })
-      .eq('id', bookingId)
-      .select();
+  if (!error && data?.[0]) return data[0];
 
-    if (data && !error) {
-      tableSuccess = true;
-    }
-  } catch (err) {
-    console.warn("Could not update bookings table, fallback to local storage update.", err);
+  // Last resort (pre-existing behaviour): keep the booking on the user's
+  // account metadata so it is not lost if the bookings table is unavailable.
+  console.warn('[darzzee] bookings insert failed, saving to account metadata:', error?.code);
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  if (userErr) throw userErr;
+  const existing = userData?.user?.user_metadata || {};
+  const current = Array.isArray(existing.bookings) ? existing.bookings : [];
+  const { error: updateError } = await supabase.auth.updateUser({
+    data: { ...existing, bookings: [record, ...current] }
+  });
+  if (updateError) throw updateError;
+  return record;
+}
+
+export async function getAllBookings() {
+  assertConfigured();
+  const { data, error } = await supabase.from('bookings').select('*').order('timestamp', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateBookingStatus(bookingId, status) {
+  assertConfigured();
+  const { data, error } = await supabase.from('bookings').update({ status }).eq('id', bookingId).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    const err = new Error('No booking updated (missing permission or booking not found).');
+    err.code = 'not_updated';
+    throw err;
   }
-
-  try {
-    const globalBookings = JSON.parse(localStorage.getItem('darzzee_global_bookings') || '[]');
-    const idx = globalBookings.findIndex((b) => b.id === bookingId);
-    if (idx !== -1) {
-      globalBookings[idx].status = status;
-      localStorage.setItem('darzzee_global_bookings', JSON.stringify(globalBookings));
-    }
-  } catch (err) {
-    console.error("Failed to update global bookings status in local storage", err);
-  }
-
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Uploads (alteration photos, tailor portfolios)
+// ---------------------------------------------------------------------------
+const IMAGE_TYPES = { 'image/jpeg': ['jpg', 'jpeg'], 'image/png': ['png'], 'image/webp': ['webp'] };
+export const UPLOAD_RULES = {
+  photo: {
+    types: IMAGE_TYPES,
+    maxBytes: 5 * 1024 * 1024,
+    accept: 'image/jpeg,image/png,image/webp',
+    hint: 'JPG, PNG or WEBP, up to 5 MB'
+  },
+  document: {
+    types: { ...IMAGE_TYPES, 'application/pdf': ['pdf'] },
+    maxBytes: 25 * 1024 * 1024,
+    accept: 'image/jpeg,image/png,image/webp,application/pdf',
+    hint: 'PDF, JPG, PNG or WEBP, up to 25 MB'
+  }
+};
+
+/** Returns an error message, or null when the file is acceptable. */
+export function validateUpload(file, kind = 'photo') {
+  if (!file) return null;
+  const rule = UPLOAD_RULES[kind];
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const allowedExts = rule.types[file.type];
+  if (!allowedExts || !allowedExts.includes(ext)) return `Unsupported file type. Allowed: ${rule.hint}.`;
+  if (file.size > rule.maxBytes) return `File is too large. Allowed: ${rule.hint}.`;
+  return null;
+}
+
+/**
+ * Uploads to a private Storage bucket under the user's own folder, renamed to
+ * a random UUID (the original filename is never used). Bucket-level MIME/size
+ * limits and storage policies must also be configured in Supabase.
+ */
+export async function uploadUserFile(bucket, userId, file, kind = 'photo') {
+  assertConfigured();
+  const problem = validateUpload(file, kind);
+  if (problem) throw new Error(problem);
+  const ext = UPLOAD_RULES[kind].types[file.type][0];
+  const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+  const { error } = await supabase.storage.from(bucket).upload(path, file, {
+    contentType: file.type,
+    upsert: false
+  });
+  if (error) throw error;
+  return path;
+}
+
+// ---------------------------------------------------------------------------
+// Tailor applications & newsletter
+// ---------------------------------------------------------------------------
+export async function submitTailorApplication(userId, application) {
+  assertConfigured();
+  const { error } = await supabase.from('tailor_applications').insert([{ ...application, user_id: userId }]);
+  if (error) throw error;
+}
+
+export async function subscribeNewsletter(email) {
+  assertConfigured();
+  const { error } = await supabase.from('newsletter_subscribers').insert([{ email: email.toLowerCase() }]);
+  if (error && error.code !== '23505') throw error; // duplicate = already subscribed
 }

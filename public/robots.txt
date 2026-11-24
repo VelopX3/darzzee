@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /profile
+Disallow: /admin
+Disallow: /login
+Disallow: /signup
+Disallow: /forgot-password
+Disallow: /reset-password
+
+Sitemap: https://www.darzzee.com/sitemap.xml

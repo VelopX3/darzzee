@@ -1,28 +1,27 @@
-import React, { useState, useEffect } from 'react';
-import { getAllBookings, updateBookingStatus } from '../supabase';
+import React, { useState, useEffect, useCallback } from 'react';
+import { getAllBookings, updateBookingStatus, friendlyError } from '../supabase';
+import { GARMENTS as AVAILABLE_SPECIALTIES, TAILOR_IMAGES } from '../data/tailors';
+import { Link } from '../lib/router';
 
-const AVAILABLE_SPECIALTIES = ['suit', 'kurta', 'sherwani', 'blouse', 'lehenga', 'shirt', 'pants', 'sari'];
-
-export default function AdminView({ 
-  tailors, 
-  currentUser,
-  onAddTailor, 
-  onEditTailor, 
-  onDeleteTailor, 
-  showToast,
-  tailorImages // Array of tailor images passed from App.jsx
+// Access to this view is decided by the signed-in account (see isAdminUser).
+// It only controls the UI — the bookings table itself must be protected by
+// Row Level Security so that only admins can read or update every booking.
+export default function AdminView({
+  isAdmin,
+  tailors,
+  onAddTailor,
+  onEditTailor,
+  onDeleteTailor,
+  onResetTailors,
+  showToast
 }) {
-  const [passcode, setPasscode] = useState('');
-  const [isUnlocked, setIsUnlocked] = useState(() => {
-    return localStorage.getItem('darzzee_admin_unlocked') === 'true';
-  });
-
-  const isAdminEmail = currentUser && currentUser.email && currentUser.email.toLowerCase() === 'admin@darzzee.com';
-  const showDashboard = isUnlocked || isAdminEmail;
+  const showDashboard = isAdmin;
 
   const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'tailors', 'bookings'
   const [allBookings, setAllBookings] = useState([]);
   const [loadingBookings, setLoadingBookings] = useState(false);
+  const [bookingsError, setBookingsError] = useState('');
+  const [updatingId, setUpdatingId] = useState(null);
 
   // Form states for adding/editing tailors
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -43,41 +42,24 @@ export default function AdminView({
     Suit: 4000, Kurta: 1200, Blouse: 1000, Sherwani: 4800, Lehenga: 5000, Pants: 800, Shirt: 700, Sari: 800
   });
 
-  useEffect(() => {
-    if (showDashboard) {
-      loadBookings();
-    }
-  }, [showDashboard]);
-
-  const loadBookings = async () => {
+  const loadBookings = useCallback(async () => {
     setLoadingBookings(true);
+    setBookingsError('');
     try {
-      const data = await getAllBookings();
-      setAllBookings(data);
+      setAllBookings(await getAllBookings());
     } catch (err) {
-      console.error(err);
-      showToast('FAILED TO LOAD BOOKINGS.');
+      console.error('[darzzee] admin bookings load failed', err?.code);
+      setBookingsError(friendlyError(err, 'Could not load bookings. Check that your account has admin access in Supabase.'));
     } finally {
       setLoadingBookings(false);
     }
-  };
+  }, []);
 
-  const handleGateSubmit = (e) => {
-    e.preventDefault();
-    if (passcode === 'darzzeeadmin@delhi2026') {
-      setIsUnlocked(true);
-      localStorage.setItem('darzzee_admin_unlocked', 'true');
-      showToast('ADMIN DASHBOARD UNLOCKED.');
-    } else {
-      showToast('INVALID PASSCODE.');
-    }
-  };
-
-  const handleLock = () => {
-    setIsUnlocked(false);
-    localStorage.removeItem('darzzee_admin_unlocked');
-    showToast('ADMIN PANEL LOCKED.');
-  };
+  useEffect(() => {
+    // Remove the legacy client-side unlock flag from older builds.
+    try { localStorage.removeItem('darzzee_admin_unlocked'); } catch { /* ignore */ }
+    if (showDashboard) loadBookings();
+  }, [showDashboard, loadBookings]);
 
   // Open form modal for adding a new tailor
   const handleOpenAddForm = () => {
@@ -109,7 +91,7 @@ export default function AdminView({
     setTExp(tailor.experience);
     
     // Check if the tailor image matches one of the local variables
-    const localIdx = tailorImages.indexOf(tailor.image);
+    const localIdx = TAILOR_IMAGES.findIndex((img) => img.src === tailor.image);
     if (localIdx !== -1) {
       setTImageIndex(localIdx);
       setTCustomImage('');
@@ -140,18 +122,29 @@ export default function AdminView({
       return;
     }
 
-    const selectedImage = tImageIndex >= 0 ? tailorImages[tImageIndex] : tCustomImage;
+    if (tImageIndex < 0) {
+      try {
+        const u = new URL(tCustomImage);
+        if (u.protocol !== 'https:') throw new Error('insecure');
+      } catch {
+        showToast('Custom image must be a valid https:// URL.', 'error');
+        return;
+      }
+    }
+    const selectedImage = tImageIndex >= 0 ? TAILOR_IMAGES[tImageIndex].src : tCustomImage.trim();
+    const selectedSrcSet = tImageIndex >= 0 ? TAILOR_IMAGES[tImageIndex].srcSet : undefined;
 
     const tailorPayload = {
-      name: tName,
+      name: tName.trim().slice(0, 80),
       city: tCity,
       mainSpecialtyBadge: tBadge.toUpperCase(),
       rating: parseFloat(tRating).toFixed(1),
       reviews: parseInt(tReviews, 10).toString(),
       experience: parseInt(tExp, 10).toString(),
       image: selectedImage,
+      imageSrcSet: selectedSrcSet,
       specialties: tSelectedSpecialties,
-      tags: tTags.split(',').map(tag => tag.trim()).filter(Boolean),
+      tags: tTags.split(',').map(tag => tag.trim().slice(0, 40)).filter(Boolean).slice(0, 6),
       prices: tPrices,
       gallery: [
         'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=600&q=80',
@@ -163,9 +156,11 @@ export default function AdminView({
 
     if (editingTailor) {
       // Edit mode
+      const { gallery, ...withoutGallery } = tailorPayload;
       onEditTailor({
         ...editingTailor,
-        ...tailorPayload
+        ...withoutGallery,
+        gallery: editingTailor.gallery || gallery
       });
       showToast(`TAILOR "${tName.toUpperCase()}" UPDATED SUCCESSFULLY.`);
     } else {
@@ -188,13 +183,16 @@ export default function AdminView({
   };
 
   const handleStatusChange = async (bookingId, newStatus) => {
+    setUpdatingId(bookingId);
     try {
       await updateBookingStatus(bookingId, newStatus);
-      showToast(`STATUS UPDATED TO ${newStatus.toUpperCase()}.`);
-      loadBookings(); // Refresh bookings
+      setAllBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, status: newStatus } : b)));
+      showToast(`Status updated to ${newStatus.replace('_', ' ')}.`, 'success');
     } catch (err) {
-      console.error(err);
-      showToast('FAILED TO UPDATE STATUS.');
+      console.error('[darzzee] status update failed', err?.code);
+      showToast(err?.code === 'not_updated' ? 'Status not updated — your account may lack admin permission.' : friendlyError(err, 'Failed to update status.'), 'error');
+    } finally {
+      setUpdatingId(null);
     }
   };
 
@@ -214,31 +212,21 @@ export default function AdminView({
   };
 
   // Metric Calculation
-  const totalRevenue = allBookings.reduce((sum, b) => sum + (b.total || 0), 0);
-  const averageRating = (tailors.reduce((sum, t) => sum + parseFloat(t.rating), 0) / tailors.length).toFixed(2);
+  const totalRevenue = allBookings
+    .filter((b) => b.status !== 'cancelled')
+    .reduce((sum, b) => sum + (Number(b.total) || 0), 0);
+  const averageRating = tailors.length
+    ? (tailors.reduce((sum, t) => sum + (parseFloat(t.rating) || 0), 0) / tailors.length).toFixed(2)
+    : '—';
 
   if (!showDashboard) {
     return (
       <div className="admin-gate-wrapper">
         <div className="admin-gate-card">
-          <div className="admin-gate-badge">SECURE ACCESS</div>
-          <h2 className="admin-gate-title">ADMIN PANEL LOGIN</h2>
-          <p className="admin-gate-desc">Enter the authentication code to manage website settings, bookings, and tailors.</p>
-          <form onSubmit={handleGateSubmit}>
-            <div className="form-group-custom">
-              <input
-                id="admin-passcode-field"
-                type="password"
-                placeholder="ENTER ACCESS CODE"
-                value={passcode}
-                onChange={(e) => setPasscode(e.target.value)}
-                required
-              />
-            </div>
-            <button type="submit" className="admin-gate-btn">
-              Authenticate
-            </button>
-          </form>
+          <div className="admin-gate-badge">Restricted</div>
+          <h1 className="admin-gate-title">Admin access only</h1>
+          <p className="admin-gate-desc">Your account does not have administrator access. If you believe this is a mistake, contact the DARZZEE team.</p>
+          <Link to="/" className="btn btn-primary">Back to home</Link>
         </div>
       </div>
     );
@@ -249,29 +237,35 @@ export default function AdminView({
       {/* Admin Header */}
       <div className="admin-header-row">
         <div>
-          <h2 className="admin-title">ADMIN CONTROL CENTER</h2>
-          <p className="admin-subtitle">Manage tailors database, customer orders, and shop stats.</p>
+          <h1 className="admin-title">ADMIN CONTROL CENTER</h1>
+          <p className="admin-subtitle">Manage tailors, customer orders and shop stats.</p>
         </div>
-        <button className="admin-lock-btn" onClick={handleLock}>
-          LOCK PANEL
-        </button>
       </div>
 
       {/* Tabs Menu */}
-      <div className="admin-tabs">
+      <div className="admin-tabs" role="tablist" aria-label="Admin sections">
         <button 
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'overview'}
           className={`admin-tab-btn ${activeTab === 'overview' ? 'active' : ''}`}
           onClick={() => setActiveTab('overview')}
         >
           OVERVIEW
         </button>
         <button 
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'tailors'}
           className={`admin-tab-btn ${activeTab === 'tailors' ? 'active' : ''}`}
           onClick={() => setActiveTab('tailors')}
         >
           MANAGE TAILORS
         </button>
         <button 
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'bookings'}
           className={`admin-tab-btn ${activeTab === 'bookings' ? 'active' : ''}`}
           onClick={() => setActiveTab('bookings')}
         >
@@ -338,7 +332,15 @@ export default function AdminView({
       {activeTab === 'tailors' && (
         <div className="admin-tailors-section">
           <div className="action-row">
-            <button className="add-tailor-btn" onClick={handleOpenAddForm}>
+            <button type="button" className="admin-reset-btn" onClick={() => {
+              if (window.confirm('Restore the original tailor catalogue? Your local edits will be lost.')) {
+                onResetTailors();
+                showToast('Tailor catalogue restored.', 'success');
+              }
+            }}>
+              RESTORE DEFAULTS
+            </button>
+            <button type="button" className="add-tailor-btn" onClick={handleOpenAddForm}>
               + ADD NEW TAILOR
             </button>
           </div>
@@ -346,10 +348,7 @@ export default function AdminView({
           <div className="admin-tailors-grid">
             {tailors.map((tailor) => (
               <div key={tailor.id} className="admin-tailor-card">
-                <div 
-                  className="admin-tailor-img" 
-                  style={{ backgroundImage: `url('${tailor.image}')` }}
-                />
+                <img className="admin-tailor-img" src={tailor.image} srcSet={tailor.imageSrcSet} sizes="140px" alt="" loading="lazy" />
                 <div className="admin-tailor-info">
                   <h4 className="tailor-name">{tailor.name}</h4>
                   <div className="tailor-meta">{tailor.city} • {tailor.experience} Yrs Exp • {tailor.rating}★ ({tailor.reviews} reviews)</div>
@@ -360,8 +359,8 @@ export default function AdminView({
                     ))}
                   </div>
                   <div className="tailor-card-actions">
-                    <button className="edit-btn" onClick={() => handleOpenEditForm(tailor)}>EDIT</button>
-                    <button className="delete-btn" onClick={() => handleDeleteClick(tailor.id, tailor.name)}>DELETE</button>
+                    <button type="button" className="edit-btn" onClick={() => handleOpenEditForm(tailor)} aria-label={`Edit ${tailor.name}`}>EDIT</button>
+                    <button type="button" className="delete-btn" onClick={() => handleDeleteClick(tailor.id, tailor.name)} aria-label={`Delete ${tailor.name}`}>DELETE</button>
                   </div>
                 </div>
               </div>
@@ -375,12 +374,14 @@ export default function AdminView({
         <div className="admin-bookings-section">
           <div className="bookings-header">
             <h4>CUSTOMER BOOKINGS LOG</h4>
-            <button className="refresh-bookings-btn" onClick={loadBookings} disabled={loadingBookings}>
+            <button type="button" className="refresh-bookings-btn" onClick={loadBookings} disabled={loadingBookings}>
               {loadingBookings ? 'REFRESHING...' : 'REFRESH LIST'}
             </button>
           </div>
 
-          {allBookings.length === 0 ? (
+          {bookingsError ? (
+            <div className="no-bookings-brutalist" role="alert">{bookingsError}</div>
+          ) : allBookings.length === 0 ? (
             <div className="no-bookings-brutalist">
               NO BOOKINGS FOUND IN SYSTEM.
             </div>
@@ -395,6 +396,7 @@ export default function AdminView({
                     <th>TAILOR</th>
                     <th>GARMENT</th>
                     <th>MODE</th>
+                    <th>DETAILS</th>
                     <th>TOTAL</th>
                     <th>STATUS</th>
                     <th>ACTIONS</th>
@@ -405,10 +407,15 @@ export default function AdminView({
                     <tr key={bk.id}>
                       <td className="date-col">{bk.date || 'N/A'}</td>
                       <td className="id-col">{bk.id}</td>
-                      <td className="email-col">{bk.userId ? bk.userId.substring(0, 15) + '...' : 'Guest'}</td>
+                      <td className="email-col">{bk.userId ? String(bk.userId).substring(0, 8) + '…' : '—'}</td>
                       <td>{bk.tailorName} ({bk.tailorCity})</td>
                       <td className="capitalize">{bk.garment}</td>
-                      <td className="capitalize">{bk.consultationMode === 'home' ? 'Home Visit' : 'Online'}</td>
+                      <td className="capitalize">{bk.consultationMode === 'home' ? 'Home Visit' : bk.consultationMode === 'pickup' ? 'Pickup' : 'Online'}</td>
+                      <td className="details-col">
+                        {bk.address?.city ? `${bk.address.city}${bk.address.pincode ? ` ${bk.address.pincode}` : ''}` : ''}
+                        {(bk.notes || bk.measurements?.notes) && <div className="muted">“{bk.notes || bk.measurements?.notes}”</div>}
+                        {(bk.photoPath || bk.measurements?.photoPath) && <div className="muted">Photo attached</div>}
+                      </td>
                       <td>₹{bk.total}</td>
                       <td>
                         <span className={`status-pill ${bk.status}`}>
@@ -419,6 +426,8 @@ export default function AdminView({
                         <select
                           className="admin-status-dropdown"
                           value={bk.status}
+                          aria-label={`Status for booking ${bk.id}`}
+                          disabled={updatingId === bk.id}
                           onChange={(e) => handleStatusChange(bk.id, e.target.value)}
                         >
                           <option value="assigned">Assigned</option>
@@ -438,11 +447,11 @@ export default function AdminView({
 
       {/* ADD/EDIT FORM MODAL */}
       {isFormOpen && (
-        <div className="admin-modal-overlay">
-          <div className="admin-modal-card">
+        <div className="admin-modal-overlay" onKeyDown={(e) => { if (e.key === 'Escape') setIsFormOpen(false); }}>
+          <div className="admin-modal-card" role="dialog" aria-modal="true" aria-labelledby="tailor-form-title" data-lenis-prevent>
             <div className="modal-header">
-              <h3>{editingTailor ? 'EDIT PARTNER TAILOR' : 'ADD PARTNER TAILOR'}</h3>
-              <button className="close-modal-btn" onClick={() => setIsFormOpen(false)}>×</button>
+              <h2 id="tailor-form-title">{editingTailor ? 'EDIT PARTNER TAILOR' : 'ADD PARTNER TAILOR'}</h2>
+              <button type="button" className="close-modal-btn" onClick={() => setIsFormOpen(false)} aria-label="Close">×</button>
             </div>
             
             <form onSubmit={handleFormSubmit}>
@@ -450,8 +459,8 @@ export default function AdminView({
                 
                 {/* Basic Details */}
                 <div className="form-group-custom">
-                  <label>Full Name</label>
-                  <input 
+                  <label htmlFor="t-name">Full Name</label>
+                  <input id="t-name" 
                     type="text" 
                     placeholder="E.g. Arjun Sharma" 
                     value={tName} 
@@ -461,8 +470,8 @@ export default function AdminView({
                 </div>
 
                 <div className="form-group-custom">
-                  <label>City</label>
-                  <select value={tCity} onChange={(e) => setTCity(e.target.value)}>
+                  <label htmlFor="t-city">City</label>
+                  <select id="t-city" value={tCity} onChange={(e) => setTCity(e.target.value)}>
                     <option value="Mumbai">Mumbai</option>
                     <option value="Delhi">Delhi</option>
                     <option value="Kolkata">Kolkata</option>
@@ -477,8 +486,8 @@ export default function AdminView({
                 </div>
 
                 <div className="form-group-custom">
-                  <label>Specialty Badge</label>
-                  <input 
+                  <label htmlFor="t-badge">Specialty Badge</label>
+                  <input id="t-badge" 
                     type="text" 
                     placeholder="E.g. MASTER OF BESPOKE SUITS" 
                     value={tBadge} 
@@ -489,8 +498,8 @@ export default function AdminView({
 
                 <div className="form-row-3col">
                   <div className="form-group-custom">
-                    <label>Rating</label>
-                    <input 
+                    <label htmlFor="t-rating">Rating</label>
+                    <input id="t-rating" 
                       type="number" 
                       step="0.1" 
                       min="1.0" 
@@ -501,8 +510,8 @@ export default function AdminView({
                     />
                   </div>
                   <div className="form-group-custom">
-                    <label>Reviews</label>
-                    <input 
+                    <label htmlFor="t-reviews">Reviews</label>
+                    <input id="t-reviews" 
                       type="number" 
                       value={tReviews} 
                       onChange={(e) => setTReviews(e.target.value)} 
@@ -510,8 +519,8 @@ export default function AdminView({
                     />
                   </div>
                   <div className="form-group-custom">
-                    <label>Experience (Yrs)</label>
-                    <input 
+                    <label htmlFor="t-exp">Experience (Yrs)</label>
+                    <input id="t-exp" 
                       type="number" 
                       value={tExp} 
                       onChange={(e) => setTExp(e.target.value)} 
@@ -522,10 +531,10 @@ export default function AdminView({
 
                 {/* Profile Image selector */}
                 <div className="form-group-custom">
-                  <label>Profile Image Source</label>
-                  <select value={tImageIndex} onChange={(e) => setTImageIndex(parseInt(e.target.value, 10))}>
+                  <label htmlFor="t-image">Profile Image Source</label>
+                  <select id="t-image" value={tImageIndex} onChange={(e) => setTImageIndex(parseInt(e.target.value, 10))}>
                     <option value={-1}>Custom URL (Paste below)</option>
-                    {tailorImages.map((_, idx) => (
+                    {TAILOR_IMAGES.map((_, idx) => (
                       <option key={idx} value={idx}>Local Tailor Image {idx + 1}</option>
                     ))}
                   </select>
@@ -533,8 +542,8 @@ export default function AdminView({
 
                 {tImageIndex === -1 && (
                   <div className="form-group-custom">
-                    <label>Custom Image URL</label>
-                    <input 
+                    <label htmlFor="t-image-url">Custom Image URL</label>
+                    <input id="t-image-url" 
                       type="url" 
                       placeholder="Paste image link..." 
                       value={tCustomImage} 
@@ -546,8 +555,8 @@ export default function AdminView({
 
                 {/* Tags */}
                 <div className="form-group-custom">
-                  <label>Tags (Comma-separated)</label>
-                  <input 
+                  <label htmlFor="t-tags">Tags (Comma-separated)</label>
+                  <input id="t-tags" 
                     type="text" 
                     placeholder="Bespoke Suits, Wedding Wear, Indian Ethnic" 
                     value={tTags} 
@@ -557,8 +566,8 @@ export default function AdminView({
 
                 {/* Specialties Selection */}
                 <div className="form-group-custom full-width">
-                  <label style={{ display: 'block', marginBottom: '8px' }}>Garment Specialties</label>
-                  <div className="specialties-checkbox-grid">
+                  <span className="form-label-text" id="t-specs-label">Garment Specialties</span>
+                  <div className="specialties-checkbox-grid" role="group" aria-labelledby="t-specs-label">
                     {AVAILABLE_SPECIALTIES.map(spec => (
                       <label key={spec} className="brutalist-checkbox-label">
                         <input 
@@ -575,7 +584,7 @@ export default function AdminView({
                 {/* Dynamic Pricing settings for checked specialties */}
                 {tSelectedSpecialties.length > 0 && (
                   <div className="form-group-custom full-width">
-                    <label style={{ display: 'block', marginBottom: '8px' }}>Stitching Prices (₹)</label>
+                    <span className="form-label-text">Stitching Prices (₹)</span>
                     <div className="prices-input-grid">
                       {tSelectedSpecialties.map(spec => {
                         const capitalized = spec.charAt(0).toUpperCase() + spec.slice(1);
@@ -584,6 +593,9 @@ export default function AdminView({
                             <span className="capitalize label">{spec}</span>
                             <input 
                               type="number"
+                              min="0"
+                              max="200000"
+                              aria-label={`${capitalized} price in rupees`}
                               value={tPrices[capitalized] || 1000}
                               onChange={(e) => handlePriceChange(capitalized, e.target.value)}
                               required

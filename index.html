@@ -1,12 +1,72 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-IN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DARZZEE - Custom Tailoring & Alteration Service</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>DARZZEE — Door-to-Door Custom Tailoring in India</title>
+  <meta name="description" content="DARZZEE is a door-to-door custom tailoring marketplace in India. Choose a verified tailor, get measured at home, and receive your stitched outfit at your doorstep." />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="canonical" href="https://www.darzzee.com/" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DARZZEE" />
+  <meta property="og:locale" content="en_IN" />
+  <meta property="og:title" content="DARZZEE — Door-to-Door Custom Tailoring in India" />
+  <meta property="og:description" content="Choose a verified tailor, get measured at home, and receive your stitched outfit at your doorstep." />
+  <meta property="og:url" content="https://www.darzzee.com/" />
+  <meta property="og:image" content="https://www.darzzee.com/og-image.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="A tailor at work — DARZZEE custom tailoring" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DARZZEE — Door-to-Door Custom Tailoring in India" />
+  <meta name="twitter:description" content="Choose a verified tailor, get measured at home, and receive your stitched outfit at your doorstep." />
+  <meta name="twitter:image" content="https://www.darzzee.com/og-image.jpg" />
+
+  <link rel="preload" href="/fonts/outfit-var-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <!-- Home hero (LCP image): fetched in parallel with the JS bundle -->
+  <link rel="preload" as="image" href="/hero/hero-poster-1280.webp" imagesrcset="/hero/hero-poster-640.webp 640w, /hero/hero-poster-960.webp 960w, /hero/hero-poster-1280.webp 1280w" imagesizes="100vw" fetchpriority="high" type="image/webp" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://www.darzzee.com/#organization",
+        "name": "DARZZEE",
+        "url": "https://www.darzzee.com/",
+        "logo": "https://www.darzzee.com/apple-touch-icon.png"
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://www.darzzee.com/#website",
+        "url": "https://www.darzzee.com/",
+        "name": "DARZZEE",
+        "publisher": { "@id": "https://www.darzzee.com/#organization" },
+        "inLanguage": "en-IN"
+      },
+      {
+        "@type": "Service",
+        "name": "Door-to-door custom tailoring",
+        "serviceType": "Custom tailoring and alterations",
+        "provider": { "@id": "https://www.darzzee.com/#organization" },
+        "areaServed": { "@type": "Country", "name": "India" },
+        "url": "https://www.darzzee.com/tailors"
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
   <div id="root"></div>
+  <noscript>
+    <p style="padding:24px;font-family:sans-serif">DARZZEE needs JavaScript to book tailors. Please enable JavaScript and reload the page.</p>
+  </noscript>
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
